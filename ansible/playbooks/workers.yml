@@ -104,9 +104,9 @@
         dest: /etc/systemd/system/kube-proxy.service
       notify: restart kube-proxy
 
-    - name: Create CNI configuration
+    - name: Create CNI configuration from central roles/templates
       template:
-        src: "{{ item.src }}"
+        src: "../templates/{{ item.src }}"
         dest: "/etc/cni/net.d/{{ item.dest }}"
       loop:
         - { src: "bridge.conf.j2", dest: "bridge.conf" }
