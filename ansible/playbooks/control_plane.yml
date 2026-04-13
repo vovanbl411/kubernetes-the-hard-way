@@ -1,0 +1,174 @@
+---
+- name: Install Kubernetes Control Plane
+  hosts: controllers
+  become: yes
+  vars:
+    k8s_version: "1.34.1"
+    etcd_servers: "{%- for host in groups['controllers'] -%}https://{{ hostvars[host]['ansible_host'] }}:2379{%- if not loop.last -%},{%- endif -%}{%- endfor -%}"
+    kubernetes_public_address: "10.0.0.10"
+
+  tasks:
+    - name: Download Kubernetes binaries
+      get_url:
+        url: "https://dl.k8s.io/v{{ k8s_version }}/bin/linux/amd64/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        mode: "0755"
+      loop:
+        - kube-apiserver
+        - kube-controller-manager
+        - kube-scheduler
+        - kubectl
+
+    - name: Create encryption config
+      copy:
+        dest: /var/lib/kubernetes/encryption-config.yaml
+        content: |
+          kind: EncryptionConfig
+          apiVersion: v1
+          resources:
+            - resources:
+                - secrets
+              providers:
+                - identity: {}
+
+    - name: Setup kube-apiserver service
+      vars:
+        etcd_list: "{%- for host in groups['controllers'] -%}https://{{ hostvars[host]['ansible_host'] }}:2379{%- if not loop.last -%},{%- endif -%}{%- endfor -%}"
+      template:
+        src: ../templates/kube-apiserver.service.j2
+        dest: /etc/systemd/system/kube-apiserver.service
+      notify:
+        - restart kube-apiserver
+
+    - name: Setup kube-controller-manager service
+      template:
+        src: ../templates/kube-controller-manager.service.j2
+        dest: /etc/systemd/system/kube-controller-manager.service
+      notify:
+        - restart kube-controller-manager
+
+    - name: Setup kube-scheduler service
+      template:
+        src: ../templates/kube-scheduler.service.j2
+        dest: /etc/systemd/system/kube-scheduler.service
+      notify:
+        - restart kube-scheduler
+
+    - name: Start kube-apiserver service
+      systemd:
+        name: kube-apiserver
+        state: started
+        enabled: yes
+
+    - name: Start kube-controller-manager service
+      systemd:
+        name: kube-controller-manager
+        state: started
+        enabled: yes
+
+    - name: Start kube-scheduler service
+      systemd:
+        name: kube-scheduler
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: restart kube-apiserver
+      systemd:
+        name: kube-apiserver
+        state: restarted
+
+    - name: restart kube-controller-manager
+      systemd:
+        name: kube-controller-manager
+        state: restarted
+
+    - name: restart kube-scheduler
+      systemd:
+        name: kube-scheduler
+        state: restarted
+
+- name: Configure RBAC for Kubelet Authorization
+  # Выполняем только на первом контроллере
+  hosts: controller-0
+  become: yes
+  tasks:
+    - name: Create RBAC manifest file for apiserver-to-kubelet
+      copy:
+        dest: /tmp/apiserver-to-kubelet-rbac.yaml
+        mode: "0644"
+        content: |
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            annotations:
+              rbac.authorization.kubernetes.io/autoupdate: "true"
+            labels:
+              kubernetes.io/bootstrapping: rbac-defaults
+            name: system:kube-apiserver-to-kubelet
+          rules:
+            - apiGroups:
+                - ""
+              resources:
+                - nodes/proxy
+                - nodes/stats
+                - nodes/log
+                - nodes/spec
+                - nodes/metrics
+              verbs:
+                - "*"
+          ---
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: system:kube-apiserver
+            namespace: ""
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: system:kube-apiserver-to-kubelet
+          subjects:
+            - apiGroup: rbac.authorization.k8s.io
+              kind: User
+              # Имя пользователя, под которым запускается API-сервер
+              # (определяется сертификатом kubernetes.pem)
+              name: kubernetes
+
+    - name: Apply RBAC manifest
+      command: kubectl apply -f /tmp/apiserver-to-kubelet-rbac.yaml --kubeconfig /var/lib/kubernetes/admin.kubeconfig
+      register: rbac_result
+      changed_when: "'created' in rbac_result.stdout or 'configured' in rbac_result.stdout"
+
+    - name: Show RBAC apply result
+      debug:
+        var: rbac_result.stdout_lines
+
+- name: Configure RBAC for Kube-Proxy
+  hosts: controller-0
+  become: yes
+  tasks:
+    - name: Create ClusterRoleBinding for kube-proxy
+      command: |
+        kubectl create clusterrolebinding system:kube-proxy \
+          --clusterrole=system:node-proxier \
+          --user=system:kube-proxy \
+          --kubeconfig /var/lib/kubernetes/admin.kubeconfig
+      register: proxy_rbac_res
+      failed_when: proxy_rbac_res.rc != 0 and 'already exists' not in proxy_rbac_res.stderr
+      changed_when: "'created' in proxy_rbac_res.stdout"
+
+- name: Configure static routes to pod networks
+  hosts: controllers
+  become: yes
+  tasks:
+    - name: Add routes to worker pod CIDRs
+      shell: |
+        {% for host in groups['workers'] %}
+        {% set worker_ip = hostvars[host]['ansible_host'] %}
+        {% set worker_index = host | regex_replace('^.*-([0-9]+)$', '\\1') %}
+        {% set pod_cidr = "10.200." ~ worker_index ~ ".0/24" %}
+        ip route add {{ pod_cidr }} via {{ worker_ip }} || true
+        {% endfor %}
+      args:
+        executable: /bin/bash
+      changed_when: false

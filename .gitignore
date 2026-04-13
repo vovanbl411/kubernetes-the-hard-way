@@ -1,0 +1,39 @@
+# --- [ System & Editors ] ---
+.history/
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# --- [ Environment & Secrets ] ---
+# Скрываем локальные переменные и секреты
+.env.local
+.env
+secrets.tfvars
+*.secret
+
+# --- [ PKI / Certs ] ---
+certs/*.pem
+certs/*.csr
+certs/*.json
+certs/*.kubeconfig
+!certs/generate_certs.sh
+!certs/generate_configs.sh
+!certs/README.md
+
+# --- [ Terraform ] ---
+# Служебные файлы Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+
+
+# --- [ Ansible ] ---
+ansible/inventory.ini
+ansible/*.retry
+ansible/ansible.log
+
+# --- [ Infrastructure State (Minio) ] ---
+minio-state/minio_data/
