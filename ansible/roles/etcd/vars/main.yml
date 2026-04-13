@@ -1,0 +1,3 @@
+---
+etcd_version: "3.5.12"
+etcd_initial_cluster: "{%- for host in groups['controllers'] -%} {{ host }}=https://{{ hostvars[host]['ansible_host'] }}:2380{%- if not loop.last -%},{%- endif %}{% endfor -%}"

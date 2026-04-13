@@ -1,0 +1,110 @@
+---
+- name: Download Kubernetes binaries
+  get_url:
+    url: "https://dl.k8s.io/v{{ k8s_version }}/bin/linux/amd64/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    mode: "0755"
+  loop:
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+    - kubectl
+
+- name: Create encryption config
+  copy:
+    dest: /var/lib/kubernetes/encryption-config.yaml
+    content: |
+      kind: EncryptionConfig
+      apiVersion: v1
+      resources:
+        - resources:
+            - secrets
+          providers:
+            - identity: {}
+
+- name: Setup kube-apiserver, kube-controller-manager, kube-apiserver services
+  template:
+    src: "{{ item }}.service.j2"
+    dest: "/etc/systemd/system/{{ item }}.service"
+  loop:
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+  notify: "restart {{ item }}"
+
+- name: Start kube-apiserver service
+  systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+    daemon_reload: yes
+  loop:
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+
+- name: Create RBAC manifest file for apiserver-to-kubelet
+  copy:
+    dest: /tmp/apiserver-to-kubelet-rbac.yaml
+    mode: "0644"
+    content: |
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        annotations:
+          rbac.authorization.kubernetes.io/autoupdate: "true"
+        labels:
+          kubernetes.io/bootstrapping: rbac-defaults
+        name: system:kube-apiserver-to-kubelet
+      rules:
+        - apiGroups:
+            - ""
+          resources:
+            - nodes/proxy
+            - nodes/stats
+            - nodes/log
+            - nodes/spec
+            - nodes/metrics
+          verbs:
+            - "*"
+      ---
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: system:kube-apiserver
+        namespace: ""
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: system:kube-apiserver-to-kubelet
+      subjects:
+        - apiGroup: rbac.authorization.k8s.io
+          kind: User
+          # Имя пользователя, под которым запускается API-сервер
+          # (определяется сертификатом kubernetes.pem)
+          name: kubernetes
+
+# Настройка RBAC для Kubelet (выполняем один раз на первом контроллере)
+- name: Apply RBAC manifest for Kubelet
+  command: kubectl apply -f /tmp/apiserver-to-kubelet-rbac.yaml --kubeconfig /var/lib/kubernetes/admin.kubeconfig
+  register: rbac_result
+  changed_when: "'created' in rbac_result.stdout or 'configured' in rbac_result.stdout"
+  run_once: true
+  delegate_to: "{{ groups['controllers'][0] }}"
+
+- name: Show RBAC apply result
+  debug:
+    var: rbac_result.stdout_lines
+
+# Настройка статических маршрутов до сетей подов
+- name: Add routes to worker pod CIDRs
+  shell: |
+    {% for host in groups['workers'] %}
+    {% set worker_ip = hostvars[host]['ansible_host'] %}
+    {% set worker_index = host | regex_replace('^.*-([0-9]+)$', '\\1') %}
+    {% set pod_cidr = "10.200." ~ worker_index ~ ".0/24" %}
+    ip route add {{ pod_cidr }} via {{ worker_ip }} || true
+    {% endfor %}
+  args:
+    executable: /bin/bash
+  changed_when: false

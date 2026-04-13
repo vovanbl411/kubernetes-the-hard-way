@@ -1,0 +1,45 @@
+---
+- name: Подготовка всех узлов
+  hosts: k8s
+  become: yes
+  roles:
+    - prepare
+
+- name: Распределение сертификатов и Kubeconfig
+  hosts: k8s
+  become: yes
+  roles:
+    - certs
+
+- name: Установка и настройка etcd
+  hosts: controllers
+  become: yes
+  roles:
+    - etcd
+
+- name: Развертывание Control Plane
+  hosts: controllers
+  become: yes
+  roles:
+    - control_plane
+
+- name: Развертывание Worker Nodes
+  hosts: workers
+  become: yes
+  roles:
+    - worker
+
+- name: Финальная проверка кластера
+  hosts: controller-0
+  become: yes
+  tasks:
+    - name: Wait for nodes to be ready
+      command: kubectl get nodes --kubeconfig /var/lib/kubernetes/admin.kubeconfig
+      register: nodes_status
+      until: nodes_status.rc == 0
+      retries: 10
+      delay: 5
+
+    - name: Show cluster status
+      debug:
+        msg: "Поздравляю! Кластер развернут и структурирован. Проверь статус: kubectl get nodes"

@@ -1,0 +1,27 @@
+[Unit]
+Description=etcd
+Documentation=https://github.com/etcd-io/etcd
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/etcd \
+--name {{ inventory_hostname }} \
+--cert-file=/var/lib/kubernetes/{{ inventory_hostname }}-etcd.pem \
+--key-file=/var/lib/kubernetes/{{ inventory_hostname }}-etcd-key.pem \
+--peer-cert-file=/var/lib/kubernetes/{{ inventory_hostname }}-etcd.pem \
+--peer-key-file=/var/lib/kubernetes/{{ inventory_hostname }}-etcd-key.pem \
+--trusted-ca-file=/var/lib/kubernetes/ca.pem \
+--peer-trusted-ca-file=/var/lib/kubernetes/ca.pem \
+--peer-client-cert-auth \
+--initial-advertise-peer-urls https://{{ ansible_host }}:2380 \
+--listen-peer-urls https://{{ ansible_host }}:2380 \
+--listen-client-urls https://{{ ansible_host }}:2379,https://127.0.0.1:2379 \
+--advertise-client-urls https://{{ ansible_host }}:2379 \
+--initial-cluster-token etcd-cluster-0 \
+--initial-cluster="{{ etcd_initial_cluster }}" \
+--initial-cluster-state new --data-dir=/var/lib/etcd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
